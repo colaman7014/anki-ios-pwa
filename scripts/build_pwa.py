@@ -64,10 +64,32 @@ def parse_protobuf_fields(buf: bytes) -> dict:
     return out
 
 
-def extract_collection_from_sqlite(db_path: Path, e62_only: bool = False) -> dict:
+def connect_readonly_with_wal(db_path: Path):
+    """Safely open a SQLite DB even if Anki.app is running with active -wal/-shm files."""
+    import shutil
+    import tempfile
+
+    wal_path = Path(str(db_path) + "-wal")
+    if wal_path.exists():
+        tmpdir_obj = tempfile.TemporaryDirectory()
+        tmp_db = Path(tmpdir_obj.name) / "collection.anki2"
+        shutil.copy2(db_path, tmp_db)
+        for suffix in ("-wal", "-shm"):
+            sidecar = Path(str(db_path) + suffix)
+            if sidecar.exists():
+                shutil.copy2(sidecar, Path(str(tmp_db) + suffix))
+        conn = sqlite3.connect(str(tmp_db))
+        conn.create_collation("unicase", lambda a, b: (a.lower() > b.lower()) - (a.lower() < b.lower()))
+        return conn, tmpdir_obj
+
     uri = f"file:{quote(str(db_path))}?mode=ro"
     conn = sqlite3.connect(uri, uri=True)
     conn.create_collation("unicase", lambda a, b: (a.lower() > b.lower()) - (a.lower() < b.lower()))
+    return conn, None
+
+
+def extract_collection_from_sqlite(db_path: Path, e62_only: bool = False) -> dict:
+    conn, tmpdir_guard = connect_readonly_with_wal(db_path)
     cur = conn.cursor()
 
     col_row = cur.execute("SELECT id, crt, mod, scm, ver FROM col").fetchone()
@@ -177,6 +199,8 @@ def extract_collection_from_sqlite(db_path: Path, e62_only: bool = False) -> dic
             )
 
     conn.close()
+    if tmpdir_guard is not None:
+        tmpdir_guard.cleanup()
     return {
         "crt": crt,
         "ver": ver,
@@ -186,6 +210,40 @@ def extract_collection_from_sqlite(db_path: Path, e62_only: bool = False) -> dic
         "cards": cards,
         "revlog": revlog,
     }
+
+
+def merge_collections(primary: dict, fallback: dict) -> dict:
+    """Merge fallback collection (e.g. E62 Fullbook) into primary (AnkiWeb Desktop profile)."""
+    for did, dname in fallback["decks"].items():
+        if did not in primary["decks"]:
+            primary["decks"][did] = dname
+    for mid, nt in fallback["notetypes"].items():
+        if mid not in primary["notetypes"]:
+            primary["notetypes"][mid] = nt
+    for nid, ntuple in fallback["notes"].items():
+        if nid not in primary["notes"]:
+            primary["notes"][nid] = ntuple
+
+    primary_cards_by_cid = {c[0]: idx for idx, c in enumerate(primary["cards"])}
+    for fc in fallback["cards"]:
+        cid = fc[0]
+        if cid not in primary_cards_by_cid:
+            primary["cards"].append(fc)
+        else:
+            p_idx = primary_cards_by_cid[cid]
+            p_card = primary["cards"][p_idx]
+            # Keep whichever card state has more reps
+            if int(fc[9]) > int(p_card[9]):
+                primary["cards"][p_idx] = fc
+
+    existing_rev_ids = {r[0] for r in primary["revlog"]}
+    for rev in fallback["revlog"]:
+        if rev[0] not in existing_rev_ids:
+            primary["revlog"].append(rev)
+            existing_rev_ids.add(rev[0])
+    primary["revlog"].sort(key=lambda r: r[0])
+    return primary
+
 
 
 def build_unit01_audio_map(audio_json_path: Path) -> dict:
@@ -239,11 +297,31 @@ def main() -> None:
         help="Read from macOS Anki.app default profile (~/Library/Application Support/Anki2/使用者 1/collection.anki2)",
     )
     parser.add_argument(
+        "--sync-cloud",
+        action="store_true",
+        help="Trigger AnkiWeb cloud sync via AnkiConnect (http://127.0.0.1:8765) before reading DB",
+    )
+    parser.add_argument(
         "--push",
         action="store_true",
         help="Automatically git commit and push updated bundles to GitHub",
     )
     args = parser.parse_args()
+
+    if args.sync_cloud:
+        import urllib.request
+
+        try:
+            req = urllib.request.Request(
+                "http://127.0.0.1:8765",
+                data=b'{"action":"sync","version":6}',
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                print("[AnkiConnect Cloud Sync]", resp.read().decode("utf-8"))
+        except Exception as exc:
+            print(f"[AnkiConnect Cloud Sync Notice] {exc}")
 
     if args.db:
         db_path = args.db.expanduser().resolve()
@@ -268,6 +346,9 @@ def main() -> None:
 
     # 1. Build E62 Core Bundle (3,011 cards)
     e62_col = extract_collection_from_sqlite(db_path, e62_only=True)
+    if db_path != DEFAULT_DB_PATH and DEFAULT_DB_PATH.exists():
+        e62_fallback = extract_collection_from_sqlite(DEFAULT_DB_PATH, e62_only=True)
+        e62_col = merge_collections(e62_col, e62_fallback)
     e62_b64, e62_raw_len, e62_gz_len = to_b64_gzip(e62_col)
     audio_map = build_unit01_audio_map(UNIT01_AUDIO_JSON)
 
@@ -283,8 +364,11 @@ def main() -> None:
         f"raw={e62_raw_len/1024/1024:.2f} MB, gz={e62_gz_len/1024:.1f} KB -> {e62_js_path}"
     )
 
-    # 2. Build Full Library Bundle (29,603 cards across 72 subdecks)
+    # 2. Build Full Library Bundle (29,603 cards across 80 decks)
     full_col = extract_collection_from_sqlite(db_path, e62_only=False)
+    if db_path != DEFAULT_DB_PATH and DEFAULT_DB_PATH.exists():
+        full_fallback = extract_collection_from_sqlite(DEFAULT_DB_PATH, e62_only=False)
+        full_col = merge_collections(full_col, full_fallback)
     full_b64, full_raw_len, full_gz_len = to_b64_gzip(full_col)
     full_js_path = data_dir / "full-bundle.js"
     full_js_content = (
