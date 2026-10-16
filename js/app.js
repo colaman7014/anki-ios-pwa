@@ -184,82 +184,169 @@
   }
 
   // --- Audio & iOS Offline Web Speech API Playback ---
+  // IMPORTANT (iOS Safari / WebKit): audio.play() and speechSynthesis.speak() must be
+  // invoked synchronously inside the user's tap handler. Any `await` before them
+  // (IndexedDB lookups, failing network requests) revokes the user-gesture activation
+  // and WebKit silently drops the playback. Everything below is therefore synchronous.
   let currentAudioEl = null;
+  let activeUtterance = null; // strong reference so WebKit GC never kills speech mid-way
+  let cachedVoices = [];
+  const mediaBlobUrlMap = new Map(); // fileName -> blob: URL (populated from IDB/imports)
 
-  async function getMediaBlobFromIdb(fileName) {
-    if (state.collection && state.collection.mediaBlobs && state.collection.mediaBlobs[fileName]) {
-      return state.collection.mediaBlobs[fileName];
-    }
-    if (!state.idb) return null;
+  function refreshVoices() {
+    try {
+      const v = window.speechSynthesis ? window.speechSynthesis.getVoices() : [];
+      if (v && v.length) cachedVoices = v;
+    } catch (_e) {}
+  }
+
+  function registerMediaBlob(fileName, blob) {
+    if (!fileName || !blob || mediaBlobUrlMap.has(fileName)) return;
+    try {
+      mediaBlobUrlMap.set(fileName, URL.createObjectURL(blob));
+    } catch (_e) {}
+  }
+
+  function loadAllMediaBlobsIntoMemory() {
+    if (!state.idb) return Promise.resolve();
     return new Promise((resolve) => {
       try {
         const tx = state.idb.transaction(['media_blobs'], 'readonly');
-        const req = tx.objectStore('media_blobs').get(fileName);
-        req.onsuccess = (e) => resolve(e.target.result ? e.target.result.blob : null);
-        req.onerror = () => resolve(null);
+        const req = tx.objectStore('media_blobs').openCursor();
+        req.onsuccess = (e) => {
+          const cursor = e.target.result;
+          if (cursor) {
+            const v = cursor.value || {};
+            registerMediaBlob(v.name, v.blob);
+            cursor.continue();
+          } else {
+            resolve();
+          }
+        };
+        req.onerror = () => resolve();
       } catch (_e) {
-        resolve(null);
+        resolve();
       }
     });
   }
 
+  // Only the local server.py mounts real Anki media under media/; static hosts
+  // (GitHub Pages) and file:// do not. Probed once at startup so the tap handler
+  // can decide synchronously without waiting for a 404.
+  let mediaServerAvailable = false;
+  function probeMediaServer() {
+    if (!location.protocol.startsWith('http')) return Promise.resolve(false);
+    return fetch('media/__probe__', { cache: 'no-store' })
+      .then((r) => {
+        mediaServerAvailable = r.ok && r.headers.get('X-Anki-Media') === '1';
+        return mediaServerAvailable;
+      })
+      .catch(() => false);
+  }
+
   function speakViaWebSpeech(text, lang = 'en-US') {
-    if (!text || typeof window.speechSynthesis === 'undefined') return;
+    const synth = window.speechSynthesis;
+    if (!text || !synth || typeof window.SpeechSynthesisUtterance === 'undefined') {
+      if (text) showToast('此瀏覽器不支援語音合成 (Web Speech API)');
+      return false;
+    }
     try {
-      window.speechSynthesis.cancel();
+      // Only cancel when something is actually queued: an unconditional cancel()
+      // right before speak() makes iOS drop the new utterance.
+      if (synth.speaking || synth.pending) synth.cancel();
+      if (synth.paused) synth.resume();
       const utter = new SpeechSynthesisUtterance(text);
       utter.lang = lang;
       utter.rate = 0.94;
-      const voices = window.speechSynthesis.getVoices() || [];
-      const langPrefix = lang.split('-')[0].toLowerCase();
+      utter.volume = 1;
+      refreshVoices();
+      const langLower = lang.toLowerCase();
+      const langPrefix = langLower.split('-')[0];
+      const norm = (v) => String(v.lang || '').toLowerCase().replace('_', '-');
       const preferred =
-        voices.find((v) => v.lang.toLowerCase().includes(lang.toLowerCase()) && /samantha|ava|daniel|alex|enhanced|natural/i.test(v.name)) ||
-        voices.find((v) => v.lang.toLowerCase().startsWith(langPrefix));
+        cachedVoices.find((v) => norm(v) === langLower && /samantha|ava|daniel|alex|enhanced|premium/i.test(v.name)) ||
+        cachedVoices.find((v) => norm(v) === langLower && v.localService) ||
+        cachedVoices.find((v) => norm(v) === langLower) ||
+        cachedVoices.find((v) => norm(v).startsWith(langPrefix));
       if (preferred) utter.voice = preferred;
-      window.speechSynthesis.speak(utter);
-    } catch (_e) {}
+      utter.onend = utter.onerror = () => {
+        if (activeUtterance === utter) activeUtterance = null;
+      };
+      activeUtterance = utter;
+      synth.speak(utter);
+      return true;
+    } catch (_e) {
+      return false;
+    }
   }
 
-  async function playAnkiSoundOrTts({ soundFile, ttsText, ttsLang = 'en-US' }) {
+  function stopCurrentAudio() {
     if (currentAudioEl) {
       try {
         currentAudioEl.pause();
       } catch (_e) {}
       currentAudioEl = null;
     }
+  }
 
+  // Synchronous on purpose: never put an `await` before audio.play()/speak() here.
+  function playAnkiSoundOrTts({ soundFile, ttsText, ttsLang = 'en-US' }) {
+    stopCurrentAudio();
+
+    let src = '';
     if (soundFile) {
-      // 1. Check IndexedDB / imported blobs first
-      const blob = await getMediaBlobFromIdb(soundFile);
-      if (blob) {
-        const url = URL.createObjectURL(blob);
-        const audio = new Audio(url);
-        currentAudioEl = audio;
-        audio.onended = () => URL.revokeObjectURL(url);
-        try {
-          await audio.play();
-          return;
-        } catch (_e) {}
-      }
-
-      // 2. Try /media/<soundFile> if running on HTTP/HTTPS server
-      if (location.protocol.startsWith('http')) {
-        try {
-          const url = `/media/${encodeURIComponent(soundFile)}`;
-          const audio = new Audio(url);
-          currentAudioEl = audio;
-          await audio.play();
-          return;
-        } catch (_e) {
-          // Fall through to Web Speech API fallback
-        }
+      if (mediaBlobUrlMap.has(soundFile)) {
+        src = mediaBlobUrlMap.get(soundFile);
+      } else if (mediaServerAvailable) {
+        // Relative path (not /media/) so it also works under a sub-path deployment
+        src = `media/${encodeURIComponent(soundFile)}`;
       }
     }
 
-    // 3. Fallback to offline iOS Web Speech API
+    if (src) {
+      const audio = new Audio(src);
+      currentAudioEl = audio;
+      let fellBack = false;
+      const fallback = () => {
+        if (fellBack || currentAudioEl !== audio) return;
+        fellBack = true;
+        if (ttsText) speakViaWebSpeech(ttsText, ttsLang);
+      };
+      audio.onerror = fallback;
+      const p = audio.play();
+      if (p && typeof p.catch === 'function') p.catch(fallback);
+      return;
+    }
+
+    // No real MP3 reachable offline -> iOS built-in TTS, called synchronously in the tap
     if (ttsText) {
       speakViaWebSpeech(ttsText, ttsLang);
+    } else if (soundFile) {
+      showToast('此音檔未包含在離線版中，且找不到可朗讀的文字');
     }
+  }
+
+  // iOS: unlock speech + audio on the very first touch so later programmatic
+  // playback (auto-play on card flip) is allowed.
+  function unlockAudioOnFirstGesture() {
+    const unlock = () => {
+      try {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (AC) {
+          const ctx = new AC();
+          const srcNode = ctx.createBufferSource();
+          srcNode.buffer = ctx.createBuffer(1, 1, 22050);
+          srcNode.connect(ctx.destination);
+          if (srcNode.start) srcNode.start(0);
+          if (ctx.resume) ctx.resume();
+        }
+      } catch (_e) {}
+      refreshVoices();
+      document.removeEventListener('touchend', unlock, true);
+      document.removeEventListener('click', unlock, true);
+    };
+    document.addEventListener('touchend', unlock, true);
+    document.addEventListener('click', unlock, true);
   }
 
   // --- Bundle Loading (E62 Core vs Full 29,603-card Collection) ---
@@ -962,6 +1049,7 @@
         state.collection.mediaBlobs = state.collection.mediaBlobs || {};
         for (const [mName, blob] of Object.entries(imported.mediaBlobs)) {
           state.collection.mediaBlobs[mName] = blob;
+          registerMediaBlob(mName, blob);
           if (state.idb) {
             try {
               const tx = state.idb.transaction(['media_blobs'], 'readwrite');
@@ -983,8 +1071,8 @@
   }
 
   async function preCacheUnit01Audio() {
-    if (!location.protocol.startsWith('http')) {
-      showToast('目前為單檔離線模式，已自動啟用 iOS 內建離線語音合成 (TTS)');
+    if (!mediaServerAvailable) {
+      showToast('目前主機沒有提供 MP3（GitHub Pages / 單檔版），發音將使用 iOS 內建離線語音 (TTS)');
       return;
     }
     const entries = Object.values(state.unit01AudioMap || {});
@@ -1002,9 +1090,10 @@
     let cached = 0;
     for (const fName of list) {
       try {
-        const resp = await fetch(`/media/${encodeURIComponent(fName)}`);
+        const resp = await fetch(`media/${encodeURIComponent(fName)}`);
         if (resp.ok) {
           const blob = await resp.blob();
+          registerMediaBlob(fName, blob);
           if (state.idb) {
             const tx = state.idb.transaction(['media_blobs'], 'readwrite');
             tx.objectStore('media_blobs').put({ name: fName, blob });
@@ -1033,6 +1122,13 @@
 
     state.idb = await openDatabase();
     await loadPersistedProgress();
+    unlockAudioOnFirstGesture();
+    refreshVoices();
+    if (window.speechSynthesis && 'onvoiceschanged' in window.speechSynthesis) {
+      window.speechSynthesis.onvoiceschanged = refreshVoices;
+    }
+    await loadAllMediaBlobsIntoMemory();
+    probeMediaServer();
     await loadEmbeddedBundle('e62');
 
     // Bind Top Header buttons

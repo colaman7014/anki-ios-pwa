@@ -250,13 +250,17 @@ def build_unit01_audio_map(audio_json_path: Path) -> dict:
     if not audio_json_path.exists():
         return {}
     raw = json.loads(audio_json_path.read_text(encoding="utf-8"))
-    items = raw if isinstance(raw, list) else raw.get("items", [])
+    if isinstance(raw, list):
+        items = raw
+    else:
+        items = raw.get("items") or raw.get("notes") or []
     mapping = {}
     for item in items:
         term = (item.get("term") or "").strip().lower()
-        pos = (item.get("partOfSpeech") or "").strip()
-        w_audio = item.get("wordAudio") or ""
-        s_audio = item.get("sentenceAudio") or ""
+        pos = (item.get("partOfSpeech") or item.get("part_of_speech") or "").strip()
+        media = item.get("media") or {}
+        w_audio = item.get("wordAudio") or Path((media.get("word") or {}).get("path") or "").name
+        s_audio = item.get("sentenceAudio") or Path((media.get("sentence") or {}).get("path") or "").name
         if w_audio.startswith("[sound:") and w_audio.endswith("]"):
             w_audio = w_audio[7:-1]
         if s_audio.startswith("[sound:") and s_audio.endswith("]"):

@@ -71,6 +71,42 @@
     </div>`;
   }
 
+  // Fields that contain nothing but [sound:...] (e.g. 4000 EEW "Sound_Example",
+  // 常春藤 "念句子", E62 "SentenceAudio") get a TTS hint based on the field name,
+  // because the offline build has no MP3 and Web Speech needs the right text.
+  function findFieldText(fieldMap, patterns) {
+    for (const key of Object.keys(fieldMap)) {
+      if (/sound|audio|念|tags|deck|card|type/i.test(key)) continue;
+      if (patterns.some((re) => re.test(key))) {
+        const t = stripHtml(fieldMap[key]);
+        if (t) return t;
+      }
+    }
+    return '';
+  }
+
+  function annotateSoundOnlyField(fieldName, val, fieldMap, fallbackTerm) {
+    const raw = String(val || '');
+    if (!/\[sound:/i.test(raw) || stripHtml(raw)) return raw;
+    let text = '';
+    let lang = 'en-US';
+    if (/example|sentence|句/i.test(fieldName)) {
+      text = findFieldText(fieldMap, [/^example$/i, /^英文例句$/, /例句/, /sentence/i, /^example/i]);
+    } else if (/中文|zh|chinese|translation/i.test(fieldName)) {
+      text = findFieldText(fieldMap, [/^背面$/, /翻譯/, /中文/, /meaningzh/i]);
+      lang = 'zh-TW';
+    } else if (/meaning/i.test(fieldName)) {
+      text = findFieldText(fieldMap, [/^meaning$/i]);
+    }
+    if (!text) {
+      text = fallbackTerm || '';
+      lang = 'en-US';
+    }
+    if (!text) return raw;
+    const hint = `|tts=${encodeURIComponent(text)}|lang=${lang}`;
+    return raw.replace(/\[sound:([^\]|]+)\]/gi, (_m, f) => `[sound:${f}${hint}]`);
+  }
+
   function evaluateTemplate(templateStr, fieldMap, options) {
     const { isBack, frontRenderedHtml, cardOrd, typedAnswer, fallbackTerm } = options;
     let out = String(templateStr || '');
@@ -150,34 +186,64 @@
       }
 
       // Standard field lookup
-      if (fieldMap[expr] !== undefined) return fieldMap[expr];
-      if (fieldMap[expr.toLowerCase()] !== undefined) return fieldMap[expr.toLowerCase()];
-      return '';
+      let val;
+      if (fieldMap[expr] !== undefined) val = fieldMap[expr];
+      else if (fieldMap[expr.toLowerCase()] !== undefined) val = fieldMap[expr.toLowerCase()];
+      else return '';
+      return annotateSoundOnlyField(expr, val, fieldMap, fallbackTerm);
     });
 
-    // 4. Replace [sound:filename.mp3] with Anki's .replay-button SVG
-    out = out.replace(/\[sound:([^\]]+)\]/gi, (_m, soundFile) => {
-      const cleanFile = soundFile.trim();
+    // 4. Replace [sound:filename.mp3] with Anki's .replay-button SVG.
+    //    The TTS fallback is the text right before the tag within the same block
+    //    (e.g. "The house has four bedrooms... [sound:sent-x.mp3]"), else the headword.
+    const BLOCK_SPLIT = /<\/?(?:div|p|br|li|ol|ul|hr|tr|td|section|header|footer|h\d)\b[^>]*>|\[sound:[^\]]*\]/gi;
+    const preSound = out;
+    out = out.replace(/\[sound:([^\]]+)\]/gi, (_m, soundFile, offset) => {
+      const hintMatch = soundFile.match(/^([^|]+)\|tts=([^|]*)\|lang=([A-Za-z-]+)$/);
+      const cleanFile = (hintMatch ? hintMatch[1] : soundFile).trim();
       if (cleanFile === '_1sec.mp3') return '';
+      if (hintMatch) {
+        let hinted = '';
+        try {
+          hinted = decodeURIComponent(hintMatch[2]);
+        } catch (_e) {}
+        return `<a class="replay-button soundLink" href="#" role="button" title="播放音訊 ${escapeHtml(
+          cleanFile
+        )}" data-sound="${escapeHtml(cleanFile)}" data-tts-fallback="${escapeHtml(
+          hinted
+        )}" data-tts-lang="${escapeHtml(hintMatch[3])}">${PLAY_SVG}</a>`;
+      }
+      const before = preSound.slice(Math.max(0, offset - 2000), offset);
+      const pieces = before.split(BLOCK_SPLIT);
+      let localText = '';
+      for (let i = pieces.length - 1; i >= 0; i--) {
+        const t = stripHtml(pieces[i]).replace(/^[*\s]+/, '').trim();
+        if (t) {
+          localText = t;
+          break;
+        }
+      }
+      const ttsText = /[a-zA-Z]/.test(localText) ? localText : fallbackTerm || localText;
       return `<a class="replay-button soundLink" href="#" role="button" title="播放音訊 ${escapeHtml(
         cleanFile
       )}" data-sound="${escapeHtml(cleanFile)}" data-tts-fallback="${escapeHtml(
-        fallbackTerm || ''
-      )}">${PLAY_SVG}<span class="sound-badge">${escapeHtml(cleanFile)}</span></a>`;
+        ttsText || ''
+      )}" data-tts-lang="en-US">${PLAY_SVG}</a>`;
     });
 
-    // 5. Rewrite relative <img src="foo.jpg"> to resolve via /media/foo.jpg or offline blob store
+    // 5. Rewrite relative <img src="foo.jpg"> to resolve via media/foo.jpg (relative, sub-path safe)
     out = out.replace(/<img\s+([^>]*?)src=(["'])([^"']+)\2([^>]*)>/gi, (full, pre, quote, srcVal, post) => {
       if (
         srcVal.startsWith('http:') ||
         srcVal.startsWith('https:') ||
         srcVal.startsWith('data:') ||
         srcVal.startsWith('blob:') ||
+        srcVal.startsWith('media/') ||
         srcVal.startsWith('/media/')
       ) {
         return full;
       }
-      return `<img ${pre}src="/media/${encodeURIComponent(srcVal)}" data-media-src="${escapeHtml(
+      return `<img ${pre}src="media/${encodeURIComponent(srcVal)}" data-media-src="${escapeHtml(
         srcVal
       )}" onerror="this.style.display='none'"${post}>`;
     });

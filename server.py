@@ -15,6 +15,7 @@ PWA_ROOT = Path(__file__).resolve().parent
 MEDIA_DIRS = [
     Path("/Users/colalin/repos/anki/build/media"),
     Path("/Users/colalin/repos/anki/build/anki-smoke/User 1/collection.media"),
+    Path.home() / "Library" / "Application Support" / "Anki2" / "使用者 1" / "collection.media",
 ]
 
 
@@ -29,11 +30,24 @@ class AnkiPwaRequestHandler(SimpleHTTPRequestHandler):
 
     def do_GET(self):
         clean_path = unquote(self.path.split("?", 1)[0])
+        if clean_path.endswith("/media/__probe__"):
+            # Lets the PWA know (synchronously at tap time) that real MP3s are served here
+            self.send_response(200)
+            self.send_header("X-Anki-Media", "1")
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"ok")
+            return
         if clean_path.startswith("/media/"):
             rel_name = Path(clean_path[len("/media/") :]).name
             for mdir in MEDIA_DIRS:
                 candidate = mdir / rel_name
-                if candidate.is_file():
+                try:
+                    found = candidate.is_file()
+                except OSError:
+                    found = False  # e.g. macOS privacy protection on ~/Library
+                if found:
                     ctype, _ = mimetypes.guess_type(str(candidate))
                     data = candidate.read_bytes()
                     self.send_response(200)
