@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Anki iOS 離線版">
+  <meta name="theme-color" content="#007aff">
+  <title>Anki iOS 離線版 — E62 全書 &amp; 完整牌組館藏</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="icons/icon-192.svg">
+  <link rel="stylesheet" href="css/anki-ios.css">
+  <style id="anki-dynamic-notetype-style"></style>
+</head>
+<body>
+  <div id="toast-banner" class="toast-banner" role="status" aria-live="polite"></div>
+
+  <div class="app-shell">
+    <!-- Top Header -->
+    <header class="top-header">
+      <div class="header-brand">
+        <div class="brand-logo" aria-hidden="true">★</div>
+        <div class="brand-title-wrap">
+          <span class="brand-title">Anki iOS 離線版</span>
+          <span class="brand-subtitle">REA 逆向規格 · Safari 加入主畫面全離線背卡</span>
+        </div>
+      </div>
+      <div class="header-actions">
+        <button id="btn-toggle-autoplay" class="icon-btn" type="button" title="切換翻卡自動發音">🔈 自動發音: 關</button>
+        <button id="btn-toggle-theme" class="icon-btn" type="button" title="切換深色/淺色模式">🌙 主題</button>
+      </div>
+    </header>
+
+    <!-- Main Viewport -->
+    <main class="main-viewport">
+      <!-- TAB 1: DECKS (牌組列表) -->
+      <section class="tab-panel active" data-tab="decks">
+        <div class="panel-container">
+          <div class="summary-banner">
+            <div class="summary-metrics">
+              <div class="metric-pill">
+                <span class="label">總卡片數</span>
+                <span id="summary-total-cards" class="val">0</span>
+              </div>
+              <div class="metric-pill new">
+                <span class="label">新卡片 (New)</span>
+                <span id="summary-new-cards" class="val">0</span>
+              </div>
+              <div class="metric-pill lrn">
+                <span class="label">學習中 (Lrn)</span>
+                <span id="summary-lrn-cards" class="val">0</span>
+              </div>
+              <div class="metric-pill rev">
+                <span class="label">待複習 (Due)</span>
+                <span id="summary-rev-cards" class="val">0</span>
+              </div>
+            </div>
+            <div class="pack-switcher">
+              <button id="btn-pack-e62" class="icon-btn primary" type="button">E62 全書 50 單元 (3,011 張)</button>
+              <button id="btn-pack-full" class="icon-btn" type="button">完整館藏 (29,603 張 / 72 子牌組)</button>
+            </div>
+          </div>
+
+          <div class="deck-list-card">
+            <div class="deck-list-header">
+              <span>牌組名稱 (點擊即可開始背卡，點擊 ▼ 展開子單元)</span>
+              <span>新卡 · 學習 · 複習</span>
+            </div>
+            <div id="deck-tree-rows"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 2: REVIEWER (複習背卡) -->
+      <section class="tab-panel" data-tab="study">
+        <div class="reviewer-wrapper">
+          <div class="reviewer-topbar">
+            <div class="reviewer-deck-info">
+              <span id="reviewer-deck-title" class="reviewer-deck-name">E62 English2000 全書::Unit 01</span>
+              <div class="reviewer-Remain-pills" title="剩餘佇列：新卡 / 學習中 / 待複習">
+                <span id="rev-count-new" class="remain-item new">0</span>
+                <span>+</span>
+                <span id="rev-count-lrn" class="remain-item lrn">0</span>
+                <span>+</span>
+                <span id="rev-count-rev" class="remain-item rev">0</span>
+              </div>
+            </div>
+            <div class="header-actions">
+              <button id="btn-replay-audio" class="icon-btn" type="button" title="播放發音 (快捷鍵 R)">🔊 發音</button>
+              <button id="btn-undo-review" class="icon-btn" type="button" title="復原上一張卡片 (快捷鍵 Z)">↩ 復原</button>
+            </div>
+          </div>
+
+          <div class="reviewer-scroll-area">
+            <div id="qa-box">
+              <div id="qa" class="card"></div>
+            </div>
+          </div>
+
+          <div class="reviewer-bottombar">
+            <div class="bottombar-inner">
+              <div id="bottom-show-answer-wrap">
+                <button id="btn-show-answer" class="show-answer-btn" type="button">顯示答案 (Show Answer)</button>
+              </div>
+              <div id="bottom-ease-grid-wrap" class="ease-grid" style="display: none;">
+                <button class="ease-btn ease-1" type="button" data-ease="1">
+                  <span id="ivl-1" class="nobold stattxt">&lt;1分鐘</span>
+                  <span class="ease-label">重來 Again</span>
+                </button>
+                <button class="ease-btn ease-2" type="button" data-ease="2">
+                  <span id="ivl-2" class="nobold stattxt">6分鐘</span>
+                  <span class="ease-label">困難 Hard</span>
+                </button>
+                <button class="ease-btn ease-3" type="button" data-ease="3">
+                  <span id="ivl-3" class="nobold stattxt">10分鐘</span>
+                  <span class="ease-label">良好 Good</span>
+                </button>
+                <button class="ease-btn ease-4" type="button" data-ease="4">
+                  <span id="ivl-4" class="nobold stattxt">4天</span>
+                  <span class="ease-label">簡單 Easy</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 3: CARD BROWSER (瀏覽與搜尋) -->
+      <section class="tab-panel" data-tab="browser">
+        <div class="panel-container">
+          <div class="search-bar-row">
+            <input id="browser-search-input" class="search-input" type="search" placeholder="搜尋單字、片語、中文釋義、例句或標籤 (如 unit01)...">
+            <select id="browser-deck-select" class="filter-select" aria-label="篩選牌組"></select>
+            <select id="browser-state-select" class="filter-select" aria-label="篩選狀態">
+              <option value="ALL">所有狀態</option>
+              <option value="NEW">新卡 (New)</option>
+              <option value="LRN">學習中 (Learning)</option>
+              <option value="REV">複習卡 (Review)</option>
+              <option value="SUSP">已暫停 (Suspended)</option>
+            </select>
+          </div>
+          <p id="browser-count-summary" style="font-size: 12px; color: var(--text-secondary); margin: 0 0 10px;"></p>
+          <div id="browser-results-list" class="browser-results-list"></div>
+        </div>
+      </section>
+
+      <!-- TAB 4: IMPORT / EXPORT / STATS (匯入、備份與離線設定) -->
+      <section class="tab-panel" data-tab="stats">
+        <div class="panel-container">
+          <div class="info-card">
+            <h3>📊 學習統計與排程狀態</h3>
+            <p>所有複習紀錄與 SM-2 間隔排程均自動儲存於 iOS Safari 本機 <code>IndexedDB</code> 與 <code>localStorage</code>，斷網或關閉瀏覽器皆不會遺失。</p>
+            <div id="stats-summary-grid" class="summary-metrics"></div>
+          </div>
+
+          <div class="info-card">
+            <h3>📥 離線匯入 Anki 牌組 (.apkg / .colpkg / .anki2 / .json)</h3>
+            <p>內建純 JavaScript SQLite3 B-Tree 與 ZIP 解壓縮引擎（無須網路或後端伺服器），可直接從 iPhone「檔案 (Files)」選取匯入 <code>.apkg</code>、<code>.colpkg</code>、<code>collection.anki2</code>、<code>fullbook.json</code> 或進度備份檔：</p>
+            <label class="dropzone-label" for="file-import-input">
+              <span>📂 點擊選擇檔案匯入 (.apkg / .colpkg / .anki2 / .json)</span>
+              <span style="font-size: 12px; font-weight: 400; color: var(--text-secondary); margin-top: 4px;">100% 裝置端本地解析 · 自動匯入卡片與音訊媒體</span>
+            </label>
+            <input id="file-import-input" type="file" accept=".apkg,.colpkg,.anki2,.anki21,.db,.json,.gz" style="display:none">
+          </div>
+
+          <div class="info-card">
+            <h3>💾 備份複習進度 &amp; 離線音訊快取</h3>
+            <p>可隨時將手機上的背卡進度匯出為 JSON 備份，或在區網連上電腦時一鍵將 Unit 01 的 308 個真人 MP3 發音快取至 iPhone 本機 IndexedDB：</p>
+            <div style="display:flex; gap:10px; flex-wrap:wrap;">
+              <button id="btn-export-progress" class="icon-btn primary" type="button">📤 匯出複習進度備份 (.json)</button>
+              <button id="btn-precache-audio" class="icon-btn" type="button">🎵 離線快取 Unit 01 真人發音 MP3 (308 檔)</button>
+            </div>
+          </div>
+
+          <div class="info-card">
+            <h3>📱 如何在 iPhone / iPad 完全離線使用 (免買 AnkiMobile)</h3>
+            <ol style="margin: 0; padding-left: 20px; font-size: 13px; color: var(--text-secondary); line-height: 1.65;">
+              <li><strong>方式 A（PWA 加入主畫面）</strong>：在 iPhone Safari 開啟本網址，點擊底部「<strong>分享 (Share)</strong>」按鈕 $\rightarrow$ 選擇「<strong>加入主畫面 (Add to Home Screen)</strong>」。Service Worker 會將程式碼與牌組完整快取，之後開啟主畫面圖示即可在飛航模式下 100% 離線背單字！</li>
+              <li><strong>方式 B（AirDrop 單一獨立 HTML 檔）</strong>：將 <code>dist/anki-ios-offline.html</code> 直接透過 AirDrop 傳到 iPhone「檔案」App，無須架設任何伺服器即可直接開啟背誦全書 50 單元（3,011 張卡片）並搭配 iOS 內建離線語音朗讀。</li>
+            </ol>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- Bottom Tab Bar -->
+    <nav class="bottom-tabbar" aria-label="主導覽列">
+      <button class="tab-btn active" type="button" data-tab-target="decks">
+        <span class="tab-icon">📚</span>
+        <span>牌組</span>
+      </button>
+      <button class="tab-btn" type="button" data-tab-target="study">
+        <span class="tab-icon">🎯</span>
+        <span>開始複習</span>
+      </button>
+      <button class="tab-btn" type="button" data-tab-target="browser">
+        <span class="tab-icon">🔍</span>
+        <span>瀏覽搜尋</span>
+      </button>
+      <button class="tab-btn" type="button" data-tab-target="stats">
+        <span class="tab-icon">⚙️</span>
+        <span>匯入與統計</span>
+      </button>
+    </nav>
+  </div>
+
+  <!-- Card Preview Modal -->
+  <div id="card-preview-modal" class="modal-backdrop" role="dialog" aria-modal="true">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <span id="modal-card-title">卡片預覽</span>
+        <div style="display:flex; gap:8px;">
+          <button id="btn-modal-study-deck" class="icon-btn primary" type="button">背誦此單元</button>
+          <button id="btn-close-modal" class="icon-btn" type="button">✕ 關閉</button>
+        </div>
+      </div>
+      <div id="modal-card-body" class="modal-body card"></div>
+    </div>
+  </div>
+
+  <script src="data/e62-bundle.js"></script>
+  <script src="js/sqlite-apkg.js"></script>
+  <script src="js/renderer.js"></script>
+  <script src="js/scheduler.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,19 @@
+{
+  "name": "Anki iOS 離線版 — E62 全書與完整館藏",
+  "short_name": "Anki 離線版",
+  "description": "基於 REA 逆向規格打造的 iOS 離線 Anki 背卡 PWA，支援 E62 50 單元與 29,603 張完整館藏、SM-2 排程與 .apkg 離線匯入。",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#000000",
+  "theme_color": "#007aff",
+  "icons": [
+    {
+      "src": "icons/icon-192.svg",
+      "sizes": "192x192 512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
