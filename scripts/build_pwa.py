@@ -246,6 +246,22 @@ def merge_collections(primary: dict, fallback: dict) -> dict:
 
 
 
+def load_full_collection(db_path: Path) -> dict:
+    """Extract the whole collection, merging in the default smoke DB when reading another profile."""
+    col = extract_collection_from_sqlite(db_path, e62_only=False)
+    if db_path != DEFAULT_DB_PATH and DEFAULT_DB_PATH.exists():
+        col = merge_collections(col, extract_collection_from_sqlite(DEFAULT_DB_PATH, e62_only=False))
+    return col
+
+
+def resolve_db_path(db, desktop: bool) -> Path:
+    if db:
+        return db.expanduser().resolve()
+    if desktop:
+        return Path.home() / "Library" / "Application Support" / "Anki2" / "使用者 1" / "collection.anki2"
+    return DEFAULT_DB_PATH
+
+
 def build_unit01_audio_map(audio_json_path: Path) -> dict:
     if not audio_json_path.exists():
         return {}
@@ -282,6 +298,54 @@ def to_b64_gzip(data_obj: dict) -> tuple[str, int, int]:
     return b64_str, len(raw_bytes), len(gz_bytes)
 
 
+def build_standalone_html(e62_js_content: str) -> None:
+    """Single-file AirDrop HTML (dist/anki-ios-offline.html) embedding CSS, JS and the E62 bundle."""
+    data_dir = PWA_ROOT / "data"
+    dist_dir = PWA_ROOT / "dist"
+    dist_dir.mkdir(parents=True, exist_ok=True)
+    index_html = (PWA_ROOT / "index.html").read_text(encoding="utf-8")
+    css_text = (PWA_ROOT / "css" / "anki-ios.css").read_text(encoding="utf-8")
+    js_sqlite = (PWA_ROOT / "js" / "sqlite-apkg.js").read_text(encoding="utf-8")
+    js_renderer = (PWA_ROOT / "js" / "renderer.js").read_text(encoding="utf-8")
+    js_scheduler = (PWA_ROOT / "js" / "scheduler.js").read_text(encoding="utf-8")
+    js_app = (PWA_ROOT / "js" / "app.js").read_text(encoding="utf-8")
+    manifest_file = data_dir / "media-manifest.js"
+    media_manifest_js = (
+        manifest_file.read_text(encoding="utf-8") if manifest_file.exists() else "window.ANKI_MEDIA_PACKS = [];"
+    )
+
+    # A literal "</script>" inside inlined JS would end the <script> block early
+    def inline_js(src: str) -> str:
+        return src.replace("</script", "<\\/script")
+
+    js_sqlite, js_renderer, js_scheduler, js_app = map(inline_js, (js_sqlite, js_renderer, js_scheduler, js_app))
+    e62_js_content = inline_js(e62_js_content)
+
+    standalone = index_html.replace(
+        '<link rel="stylesheet" href="css/anki-ios.css">',
+        f"<style>\n{css_text}\n</style>",
+    )
+    standalone = standalone.replace(
+        '  <script src="data/e62-bundle.js"></script>\n'
+        '  <script src="data/media-manifest.js"></script>\n'
+        '  <script src="js/sqlite-apkg.js"></script>\n'
+        '  <script src="js/renderer.js"></script>\n'
+        '  <script src="js/scheduler.js"></script>\n'
+        '  <script src="js/app.js"></script>',
+        f"<script>\n{e62_js_content}\n</script>\n"
+        f"<script>\n{media_manifest_js}\n</script>\n"
+        f"<script>\n{js_sqlite}\n</script>\n"
+        f"<script>\n{js_renderer}\n</script>\n"
+        f"<script>\n{js_scheduler}\n</script>\n"
+        f"<script>\n{js_app}\n</script>",
+    )
+    standalone_path = dist_dir / "anki-ios-offline.html"
+    standalone_path.write_text(standalone, encoding="utf-8")
+    print(
+        f"[Standalone AirDrop HTML] size={standalone_path.stat().st_size/1024:.1f} KB -> {standalone_path}"
+    )
+
+
 def main() -> None:
     import argparse
     import subprocess
@@ -306,11 +370,20 @@ def main() -> None:
         help="Trigger AnkiWeb cloud sync via AnkiConnect (http://127.0.0.1:8765) before reading DB",
     )
     parser.add_argument(
+        "--standalone-only",
+        action="store_true",
+        help="Only rebuild dist/anki-ios-offline.html from the existing data/e62-bundle.js (no DB access)",
+    )
+    parser.add_argument(
         "--push",
         action="store_true",
         help="Automatically git commit and push updated bundles to GitHub",
     )
     args = parser.parse_args()
+
+    if args.standalone_only:
+        build_standalone_html((PWA_ROOT / "data" / "e62-bundle.js").read_text(encoding="utf-8"))
+        return
 
     if args.sync_cloud:
         import urllib.request
@@ -327,19 +400,7 @@ def main() -> None:
         except Exception as exc:
             print(f"[AnkiConnect Cloud Sync Notice] {exc}")
 
-    if args.db:
-        db_path = args.db.expanduser().resolve()
-    elif args.desktop:
-        db_path = (
-            Path.home()
-            / "Library"
-            / "Application Support"
-            / "Anki2"
-            / "使用者 1"
-            / "collection.anki2"
-        )
-    else:
-        db_path = DEFAULT_DB_PATH
+    db_path = resolve_db_path(args.db, args.desktop)
 
     print(f"[Source Anki DB] {db_path}")
 
@@ -369,10 +430,7 @@ def main() -> None:
     )
 
     # 2. Build Full Library Bundle (29,603 cards across 80 decks)
-    full_col = extract_collection_from_sqlite(db_path, e62_only=False)
-    if db_path != DEFAULT_DB_PATH and DEFAULT_DB_PATH.exists():
-        full_fallback = extract_collection_from_sqlite(DEFAULT_DB_PATH, e62_only=False)
-        full_col = merge_collections(full_col, full_fallback)
+    full_col = load_full_collection(db_path)
     full_b64, full_raw_len, full_gz_len = to_b64_gzip(full_col)
     full_js_path = data_dir / "full-bundle.js"
     full_js_content = (
@@ -385,35 +443,7 @@ def main() -> None:
         f"raw={full_raw_len/1024/1024:.2f} MB, gz={full_gz_len/1024/1024:.2f} MB -> {full_js_path}"
     )
 
-    # 3. Build Single-File Standalone HTML for AirDrop (dist/anki-ios-offline.html)
-    index_html = (PWA_ROOT / "index.html").read_text(encoding="utf-8")
-    css_text = (PWA_ROOT / "css" / "anki-ios.css").read_text(encoding="utf-8")
-    js_sqlite = (PWA_ROOT / "js" / "sqlite-apkg.js").read_text(encoding="utf-8")
-    js_renderer = (PWA_ROOT / "js" / "renderer.js").read_text(encoding="utf-8")
-    js_scheduler = (PWA_ROOT / "js" / "scheduler.js").read_text(encoding="utf-8")
-    js_app = (PWA_ROOT / "js" / "app.js").read_text(encoding="utf-8")
-
-    standalone = index_html.replace(
-        '<link rel="stylesheet" href="css/anki-ios.css">',
-        f"<style>\n{css_text}\n</style>",
-    )
-    standalone = standalone.replace(
-        '  <script src="data/e62-bundle.js"></script>\n'
-        '  <script src="js/sqlite-apkg.js"></script>\n'
-        '  <script src="js/renderer.js"></script>\n'
-        '  <script src="js/scheduler.js"></script>\n'
-        '  <script src="js/app.js"></script>',
-        f"<script>\n{e62_js_content}\n</script>\n"
-        f"<script>\n{js_sqlite}\n</script>\n"
-        f"<script>\n{js_renderer}\n</script>\n"
-        f"<script>\n{js_scheduler}\n</script>\n"
-        f"<script>\n{js_app}\n</script>",
-    )
-    standalone_path = dist_dir / "anki-ios-offline.html"
-    standalone_path.write_text(standalone, encoding="utf-8")
-    print(
-        f"[Standalone AirDrop HTML] size={standalone_path.stat().st_size/1024:.1f} KB -> {standalone_path}"
-    )
+    build_standalone_html(e62_js_content)
 
     if args.push:
         subprocess.run(

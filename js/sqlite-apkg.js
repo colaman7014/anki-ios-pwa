@@ -112,6 +112,96 @@
     return entries;
   }
 
+  // --- 2b. Streaming ZIP reader for large deck media packs ---
+  // Never loads the whole archive: only the central directory is read up front and media
+  // entries are pulled through File.slice() in ~8 MB windows (a pack can be >100 MB on iOS).
+  async function readZipDirectory(file) {
+    const size = file.size;
+    if (size < 22) throw new Error('Invalid ZIP archive: too small');
+    const tailLen = Math.min(size, 65557);
+    const tail = new DataView(await file.slice(size - tailLen).arrayBuffer());
+    let eocd = -1;
+    for (let i = tailLen - 22; i >= 0; i--) {
+      if (tail.getUint32(i, true) === 0x06054b50) {
+        eocd = i;
+        break;
+      }
+    }
+    if (eocd < 0) throw new Error('Invalid ZIP archive: EOCD signature not found');
+    const total = tail.getUint16(eocd + 10, true);
+    const cdSize = tail.getUint32(eocd + 12, true);
+    const cdOffset = tail.getUint32(eocd + 16, true);
+    if (cdOffset === 0xffffffff || cdSize === 0xffffffff) {
+      throw new Error('ZIP64 archives are not supported');
+    }
+    const cd = new DataView(await file.slice(cdOffset, cdOffset + cdSize).arrayBuffer());
+    const decoder = new TextDecoder('utf-8');
+    const entries = new Map();
+    let pos = 0;
+    for (let i = 0; i < total && pos + 46 <= cd.byteLength; i++) {
+      if (cd.getUint32(pos, true) !== 0x02014b50) break;
+      const nameLen = cd.getUint16(pos + 28, true);
+      const extraLen = cd.getUint16(pos + 30, true);
+      const commentLen = cd.getUint16(pos + 32, true);
+      const name = decoder.decode(new Uint8Array(cd.buffer, pos + 46, nameLen));
+      entries.set(name, {
+        name,
+        method: cd.getUint16(pos + 10, true),
+        compressedSize: cd.getUint32(pos + 20, true),
+        size: cd.getUint32(pos + 24, true),
+        headerOffset: cd.getUint32(pos + 42, true)
+      });
+      pos += 46 + nameLen + extraLen + commentLen;
+    }
+    return entries;
+  }
+
+  // Calls onEntry(entry, Uint8Array) for each STORED entry in `list`, reading the file in windows.
+  async function forEachStoredZipEntry(file, list, onEntry, windowBytes = 8 * 1024 * 1024) {
+    const sorted = list.slice().sort((a, b) => a.headerOffset - b.headerOffset);
+    let buf = null;
+    let bufStart = 0;
+    const have = (from, to) => buf && from >= bufStart && to <= bufStart + buf.byteLength;
+    for (const entry of sorted) {
+      if (entry.method !== 0) throw new Error(`${entry.name}: only uncompressed (stored) entries are supported`);
+      const h = entry.headerOffset;
+      if (!have(h, h + 30)) {
+        buf = new Uint8Array(await file.slice(h, h + windowBytes).arrayBuffer());
+        bufStart = h;
+      }
+      let view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+      let o = h - bufStart;
+      const dataEnd = o + 30 + view.getUint16(o + 26, true) + view.getUint16(o + 28, true) + entry.compressedSize;
+      if (dataEnd > buf.byteLength && bufStart + buf.byteLength < file.size) {
+        buf = new Uint8Array(await file.slice(h, h + Math.max(windowBytes, dataEnd)).arrayBuffer());
+        bufStart = h;
+        view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+        o = 0;
+      }
+      const start = o + 30 + view.getUint16(o + 26, true) + view.getUint16(o + 28, true);
+      await onEntry(entry, buf.slice(start, start + entry.compressedSize));
+    }
+  }
+
+  // Returns the parsed pack.json when `file` is an Anki iOS deck media pack, otherwise null.
+  async function readDeckPackMeta(file) {
+    try {
+      const head = new Uint8Array(await file.slice(0, 2).arrayBuffer());
+      if (head[0] !== 0x50 || head[1] !== 0x4b) return null;
+      const entries = await readZipDirectory(file);
+      const metaEntry = entries.get('pack.json');
+      if (!metaEntry) return null;
+      let text = '';
+      await forEachStoredZipEntry(file, [metaEntry], async (_e, bytes) => {
+        text = new TextDecoder('utf-8').decode(bytes);
+      });
+      const meta = JSON.parse(text);
+      return meta && meta.kind === 'anki-ios-pwa-deckpack' ? { meta, entries } : null;
+    } catch (_e) {
+      return null;
+    }
+  }
+
   // --- 3. Anki v18 Protobuf Wire Decoder ---
   function parseProtobufFields(uint8) {
     let pos = 0;
@@ -712,6 +802,9 @@
     decompressBytes,
     decompressBase64Gzip,
     parseZipArchive,
+    readZipDirectory,
+    forEachStoredZipEntry,
+    readDeckPackMeta,
     parseProtobufFields,
     parseSqliteDatabase,
     convertAnkiSqliteToCollection,

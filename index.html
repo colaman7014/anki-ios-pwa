@@ -56,15 +56,11 @@
                 <span id="summary-rev-cards" class="val">0</span>
               </div>
             </div>
-            <div class="pack-switcher">
-              <button id="btn-pack-e62" class="icon-btn primary" type="button">E62 全書 50 單元 (3,011 張)</button>
-              <button id="btn-pack-full" class="icon-btn" type="button">完整館藏 (29,603 張 / 72 子牌組)</button>
-            </div>
           </div>
 
           <div class="deck-list-card">
             <div class="deck-list-header">
-              <span>牌組名稱 (點擊即可開始背卡，點擊 ▼ 展開子單元)</span>
+              <span>牌組名稱（點牌組背卡、▶ 展開子牌組、🔊 管理離線音檔）</span>
               <span>新卡 · 學習 · 複習</span>
             </div>
             <div id="deck-tree-rows"></div>
@@ -165,6 +161,17 @@
           </div>
 
           <div class="info-card">
+            <h3>🔊 離線音檔／圖片（每個牌組獨立匯入）</h3>
+            <p>音檔與圖片很大（完整館藏約 625 MB），因此依牌組拆成獨立的 <code>.zip</code> 牌組包，用到哪個牌組就匯入哪一包。在電腦執行 <code>python3 scripts/build_media_packs.py</code>，把 <code>dist/packs/</code> 內需要的 zip 用 AirDrop 傳到 iPhone「檔案」，再按下方按鈕選取（可一次選多個）。</p>
+            <label class="dropzone-label" for="media-pack-input">
+              <span>📂 選擇牌組包 (.zip) 匯入</span>
+              <span style="font-size: 12px; font-weight: 400; color: var(--text-secondary); margin-top: 4px;">逐檔分段讀取，不會一次佔用大量記憶體 · 可隨時移除單一牌組</span>
+            </label>
+            <input id="media-pack-input" type="file" accept=".zip,application/zip" multiple style="display:none">
+            <div id="media-pack-list-all" class="media-pack-list"></div>
+          </div>
+
+          <div class="info-card">
             <h3>💾 備份複習進度 &amp; 離線音訊快取</h3>
             <p>可隨時將手機上的背卡進度匯出為 JSON 備份，或在區網連上電腦時一鍵將 Unit 01 的 308 個真人 MP3 發音快取至 iPhone 本機 IndexedDB：</p>
             <div style="display:flex; gap:10px; flex-wrap:wrap;">
@@ -219,7 +226,25 @@
     </div>
   </div>
 
+  <!-- Media Pack Modal -->
+  <div id="media-pack-modal" class="modal-backdrop" role="dialog" aria-modal="true">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <span id="media-pack-modal-title">離線音檔／圖片</span>
+        <div style="display:flex; gap:8px;">
+          <label class="icon-btn primary" for="media-pack-input">📂 匯入牌組包</label>
+          <button id="btn-close-media-modal" class="icon-btn" type="button">✕ 關閉</button>
+        </div>
+      </div>
+      <div class="modal-body">
+        <p class="media-pack-meta">把電腦 <code>dist/packs/</code> 內對應的 zip 用 AirDrop 傳到 iPhone「檔案」，再按「匯入牌組包」選取。匯入後即可在飛航模式播放真人發音、顯示圖片；未匯入的卡片會改用 iOS 內建語音朗讀。</p>
+        <div id="media-pack-list" class="media-pack-list"></div>
+      </div>
+    </div>
+  </div>
+
   <script src="data/e62-bundle.js"></script>
+  <script src="data/media-manifest.js"></script>
   <script src="js/sqlite-apkg.js"></script>
   <script src="js/renderer.js"></script>
   <script src="js/scheduler.js"></script>

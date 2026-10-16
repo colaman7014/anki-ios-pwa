@@ -1,4 +1,4 @@
-const CACHE_NAME = 'anki-ios-pwa-cache-v3';
+const CACHE_NAME = 'anki-ios-pwa-cache-v4';
 const CORE_ASSETS = [
   './',
   './index.html',
@@ -9,7 +9,9 @@ const CORE_ASSETS = [
   './js/renderer.js',
   './js/scheduler.js',
   './js/app.js',
-  './data/e62-bundle.js'
+  './data/e62-bundle.js',
+  './data/full-bundle.js',
+  './data/media-manifest.js'
 ];
 
 self.addEventListener('install', (event) => {

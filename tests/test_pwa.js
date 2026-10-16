@@ -8,8 +8,9 @@ require('../js/renderer.js');
 require('../js/scheduler.js');
 require('../data/e62-bundle.js');
 require('../data/full-bundle.js');
+require('../data/media-manifest.js');
 
-const { decompressBase64Gzip, convertAnkiSqliteToCollection } = global.AnkiSqliteApkg;
+const { decompressBase64Gzip, convertAnkiSqliteToCollection, readDeckPackMeta, forEachStoredZipEntry } = global.AnkiSqliteApkg;
 const { renderAnkiCard } = global.AnkiRenderer;
 const { computeNextState, previewAllIntervals, buildDeckTree, buildStudyQueue } = global.AnkiScheduler;
 
@@ -70,6 +71,50 @@ async function runTests() {
     const parsedFromDb = convertAnkiSqliteToCollection(dbBytes);
     assert.strictEqual(parsedFromDb.cards.length, 29603);
     assert.strictEqual(Object.keys(parsedFromDb.notes).length, 29603);
+  }
+
+  console.log('6. Testing per-deck media pack manifest & streaming ZIP reader...');
+  const packs = global.ANKI_MEDIA_PACKS;
+  assert(Array.isArray(packs) && packs.length > 0, 'media manifest must list deck packs');
+  const deckPaths = new Set(Object.values(fullCol.decks));
+  for (const p of packs) {
+    assert(deckPaths.has(p.deckPath), `pack ${p.title} must map to a real deck`);
+    assert(p.files > 0 && p.bytes > 0, `pack ${p.title} must contain media`);
+  }
+  for (const a of packs) {
+    for (const b of packs) {
+      assert(a === b || !(b.deckPath + '::').startsWith(a.deckPath + '::'), `packs must not overlap: ${a.title} / ${b.title}`);
+    }
+  }
+  const packDir = path.join(__dirname, '..', 'dist', 'packs');
+  const smallest = packs.slice().sort((a, b) => a.bytes - b.bytes)[0];
+  const packFile = path.join(packDir, smallest.zip);
+  if (fs.existsSync(packFile)) {
+    const buf = fs.readFileSync(packFile);
+    const fileLike = {
+      size: buf.length,
+      slice: (a, e) => ({
+        arrayBuffer: async () => {
+          const s = buf.subarray(a, Math.min(e === undefined ? buf.length : e, buf.length));
+          return s.buffer.slice(s.byteOffset, s.byteOffset + s.byteLength);
+        }
+      })
+    };
+    const parsed = await readDeckPackMeta(fileLike);
+    assert(parsed, 'pack zip must be recognised as a deck pack');
+    assert.strictEqual(parsed.meta.id, smallest.id);
+    const media = parsed.meta.files.map(([name]) => parsed.entries.get('media/' + name));
+    assert(media.every(Boolean), 'every file listed in pack.json must exist in the zip');
+    const sizes = new Map(parsed.meta.files);
+    let seen = 0;
+    await forEachStoredZipEntry(fileLike, media, async (entry, bytes) => {
+      assert.strictEqual(bytes.length, sizes.get(entry.name.slice(6)), `size mismatch for ${entry.name}`);
+      seen++;
+    });
+    assert.strictEqual(seen, smallest.files, 'streaming reader must yield every media file');
+    assert.strictEqual(await readDeckPackMeta({ size: 4, slice: () => ({ arrayBuffer: async () => new Uint8Array([1, 2, 3, 4]).buffer }) }), null, 'non-zip is not a pack');
+  } else {
+    console.log('   (dist/packs not built; skipped zip reader check — run scripts/build_media_packs.py)');
   }
 
   console.log('ALL TESTS PASSED SUCCESSFULLY!');
