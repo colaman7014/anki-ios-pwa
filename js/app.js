@@ -154,9 +154,18 @@
   function applyModifiedCardsToCollection(col) {
     if (!col || !col.cards) return;
     for (let i = 0; i < col.cards.length; i++) {
-      const cid = String(col.cards[i][0]);
+      const bundleCard = col.cards[i];
+      const cid = String(bundleCard[0]);
       if (state.modifiedCardsMap.has(cid)) {
-        col.cards[i] = state.modifiedCardsMap.get(cid).slice();
+        const localCard = state.modifiedCardsMap.get(cid);
+        const bundleReps = Number(bundleCard[9] || 0);
+        const localReps = Number(localCard[9] || 0);
+        if (localReps >= bundleReps) {
+          col.cards[i] = localCard.slice();
+        } else {
+          // Bundle from Anki.app has newer reviews; update local map to match
+          state.modifiedCardsMap.set(cid, bundleCard.slice());
+        }
       }
     }
   }

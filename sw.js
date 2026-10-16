@@ -1,4 +1,4 @@
-const CACHE_NAME = 'anki-ios-pwa-cache-v1';
+const CACHE_NAME = 'anki-ios-pwa-cache-v2';
 const CORE_ASSETS = [
   './',
   './index.html',
@@ -29,22 +29,22 @@ self.addEventListener('activate', (event) => {
   );
 });
 
+// Network-first with offline cache fallback:
+// When online, fetches latest pushed bundles from GitHub/server and updates cache;
+// when offline (Airplane mode), serves immediately from local cache.
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
   event.respondWith(
-    caches.match(event.request).then((cachedResponse) => {
-      if (cachedResponse) return cachedResponse;
-      return fetch(event.request)
-        .then((networkResponse) => {
-          if (networkResponse && networkResponse.status === 200) {
-            const responseClone = networkResponse.clone();
-            caches.open(CACHE_NAME).then((cache) => {
-              cache.put(event.request, responseClone);
-            });
-          }
-          return networkResponse;
-        })
-        .catch(() => cachedResponse);
-    })
+    fetch(event.request)
+      .then((networkResponse) => {
+        if (networkResponse && networkResponse.status === 200) {
+          const responseClone = networkResponse.clone();
+          caches.open(CACHE_NAME).then((cache) => {
+            cache.put(event.request, responseClone);
+          });
+        }
+        return networkResponse;
+      })
+      .catch(() => caches.match(event.request))
   );
 });

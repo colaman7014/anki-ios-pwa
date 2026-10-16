@@ -221,13 +221,53 @@ def to_b64_gzip(data_obj: dict) -> tuple[str, int, int]:
 
 
 def main() -> None:
+    import argparse
+    import subprocess
+
+    parser = argparse.ArgumentParser(
+        description="Extract Anki.app SQLite collection into iOS Offline PWA bundles and optionally push to GitHub."
+    )
+    parser.add_argument(
+        "--db",
+        type=Path,
+        default=None,
+        help="Path to collection.anki2 (defaults to build/anki-smoke/User 1/collection.anki2)",
+    )
+    parser.add_argument(
+        "--desktop",
+        action="store_true",
+        help="Read from macOS Anki.app default profile (~/Library/Application Support/Anki2/使用者 1/collection.anki2)",
+    )
+    parser.add_argument(
+        "--push",
+        action="store_true",
+        help="Automatically git commit and push updated bundles to GitHub",
+    )
+    args = parser.parse_args()
+
+    if args.db:
+        db_path = args.db.expanduser().resolve()
+    elif args.desktop:
+        db_path = (
+            Path.home()
+            / "Library"
+            / "Application Support"
+            / "Anki2"
+            / "使用者 1"
+            / "collection.anki2"
+        )
+    else:
+        db_path = DEFAULT_DB_PATH
+
+    print(f"[Source Anki DB] {db_path}")
+
     data_dir = PWA_ROOT / "data"
     dist_dir = PWA_ROOT / "dist"
     data_dir.mkdir(parents=True, exist_ok=True)
     dist_dir.mkdir(parents=True, exist_ok=True)
 
     # 1. Build E62 Core Bundle (3,011 cards)
-    e62_col = extract_collection_from_sqlite(DEFAULT_DB_PATH, e62_only=True)
+    e62_col = extract_collection_from_sqlite(db_path, e62_only=True)
     e62_b64, e62_raw_len, e62_gz_len = to_b64_gzip(e62_col)
     audio_map = build_unit01_audio_map(UNIT01_AUDIO_JSON)
 
@@ -244,7 +284,7 @@ def main() -> None:
     )
 
     # 2. Build Full Library Bundle (29,603 cards across 72 subdecks)
-    full_col = extract_collection_from_sqlite(DEFAULT_DB_PATH, e62_only=False)
+    full_col = extract_collection_from_sqlite(db_path, e62_only=False)
     full_b64, full_raw_len, full_gz_len = to_b64_gzip(full_col)
     full_js_path = data_dir / "full-bundle.js"
     full_js_content = (
@@ -287,6 +327,25 @@ def main() -> None:
         f"[Standalone AirDrop HTML] size={standalone_path.stat().st_size/1024:.1f} KB -> {standalone_path}"
     )
 
+    if args.push:
+        subprocess.run(
+            ["git", "add", "data/e62-bundle.js", "data/full-bundle.js", "dist/anki-ios-offline.html"],
+            cwd=str(PWA_ROOT),
+            check=True,
+        )
+        diff_check = subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=str(PWA_ROOT))
+        if diff_check.returncode != 0:
+            subprocess.run(
+                ["git", "commit", "-m", "chore(sync): update Anki collection bundles from Anki.app"],
+                cwd=str(PWA_ROOT),
+                check=True,
+            )
+            subprocess.run(["git", "push", "origin", "main"], cwd=str(PWA_ROOT), check=True)
+            print("[Git Push] Successfully pushed updated Anki bundles to origin/main")
+        else:
+            print("[Git Push] Bundles are already up to date; nothing to commit.")
+
 
 if __name__ == "__main__":
     main()
+
